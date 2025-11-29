@@ -1,0 +1,25 @@
+{
+  "name": "webhook-single-file",
+  "version": "1.0.0",
+  "description": "Single-file Express webhook receiver (ESM)",
+  "type": "module",
+  "main": "webhook.js",
+  "scripts": {
+    "start": "node webhook.js",
+    "start:dev": "nodemon webhook.js"
+  },
+  "keywords": [
+    "express",
+    "webhook"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
