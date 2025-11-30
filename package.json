@@ -15,6 +15,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@upstash/redis": "^1.35.7",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "node-fetch": "^3.3.2"

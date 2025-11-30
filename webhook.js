@@ -1,10 +1,17 @@
-// Use ES module import — this file uses only Express and minimal handling.
 import express from 'express';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
+import { Redis } from '@upstash/redis';
+
 dotenv.config();
 
 const app = express();
+
+// Initialize Upstash Redis with correct env variable names
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL,
+  token: process.env.KV_REST_API_TOKEN,
+});
 
 // Telegram Bot Configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -16,22 +23,7 @@ const KNOWN_TOKENS = {
   '38wQFRuj6FezzGYegzHdqrRK7hkEkBx7wSqxDBYXpKpy': 'kPUSD-USDC'
 };
 
-// Parse JSON bodies
 app.use(express.json());
-
-// Store processed transaction signatures to prevent duplicates
-const processedTransactions = new Set();
-const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent memory issues
-
-// Clean up old transactions periodically (every hour)
-setInterval(() => {
-  if (processedTransactions.size > MAX_CACHE_SIZE) {
-    const toKeep = Array.from(processedTransactions).slice(-MAX_CACHE_SIZE);
-    processedTransactions.clear();
-    toKeep.forEach(sig => processedTransactions.add(sig));
-    console.log(`🧹 Cleaned transaction cache, kept ${toKeep.length} recent transactions`);
-  }
-}, 300000);
 
 // Decode and format the webhook event
 function decodeWebhookEvent(event) {
@@ -40,11 +32,9 @@ function decodeWebhookEvent(event) {
   const type = event.type || 'UNKNOWN';
   const source = event.source || 'Unknown';
   
-  // Extract token transfers - only get the first one
   const tokenTransfers = event.tokenTransfers || [];
   let withdrawal = null;
   
-  // Get only the first token transfer
   if (tokenTransfers.length > 0) {
     const transfer = tokenTransfers[0];
     const tokenSymbol = KNOWN_TOKENS[transfer.mint] || `${transfer.mint.slice(0, 8)}...`;
@@ -65,7 +55,7 @@ function decodeWebhookEvent(event) {
     type,
     source,
     withdrawal,
-    fee: event.fee / 1e9, // Convert lamports to SOL
+    fee: event.fee / 1e9,
   };
 }
 
@@ -135,43 +125,57 @@ app.post('/webhook', async (req, res) => {
   for (const event of events) {
     const signature = event.signature;
     
-    // Check if we've already processed this transaction
-    if (processedTransactions.has(signature)) {
-      console.log(`⏭️ Duplicate transaction detected, skipping: ${signature.slice(0, 16)}...`);
-      continue;
-    }
-    
-    // Filter for transactions containing "withdraw" in the type or description
-    const type = (event.type || '').toLowerCase();
-    const description = (event.description || '').toLowerCase();
-    
-    if (type.includes('withdraw') || description.includes('withdraw')) {
-      console.log('💸 Withdrawal detected!');
+    try {
+      // Check if transaction already processed using Upstash Redis
+      const cacheKey = `tx:${signature}`;
+      const exists = await redis.get(cacheKey);
       
-      // Mark this transaction as processed BEFORE sending to Telegram
-      processedTransactions.add(signature);
+      if (exists) {
+        console.log(`⏭️ Duplicate transaction detected, skipping: ${signature.slice(0, 16)}...`);
+        continue;
+      }
       
-      // Decode the event
-      const decoded = decodeWebhookEvent(event);
+      // Filter for transactions containing "withdraw" in the type or description
+      const type = (event.type || '').toLowerCase();
+      const description = (event.description || '').toLowerCase();
       
-      // Format message
-      const message = formatTelegramMessage(decoded);
-      
-      // Send to Telegram
-      await sendTelegramMessage(message);
-    } else {
-      console.log(new Date().toISOString());
-      console.log(`⏭️ Skipping event type: ${type}`);
-      
-      // Still mark as processed to avoid future duplicate checks
-      processedTransactions.add(signature);
+      if (type.includes('withdraw') || description.includes('withdraw')) {
+        console.log('💸 Withdrawal detected!');
+        
+        // Mark transaction as processed with 15 minute TTL (900 seconds)
+        await redis.set(cacheKey, '1', { ex: 900 });
+        
+        // Decode the event
+        const decoded = decodeWebhookEvent(event);
+        
+        // Format message
+        const message = formatTelegramMessage(decoded);
+        
+        // Send to Telegram
+        await sendTelegramMessage(message);
+      } else {
+        console.log(new Date().toISOString());
+        console.log(`⏭️ Skipping event type: ${type}`);
+        
+        // Still cache non-withdrawal transactions to prevent re-processing
+        await redis.set(cacheKey, '1', { ex: 900 });
+      }
+    } catch (error) {
+      console.error('❌ Error processing transaction:', error);
     }
   }
 });
 
+// For local development
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Webhook receiver listening on port ${PORT}`);
-  console.log(`📱 Telegram Bot Token: ${TELEGRAM_BOT_TOKEN ? '✅ Set' : '❌ Not set'}`);
-  console.log(`💬 Telegram Chat ID: ${TELEGRAM_CHAT_ID ? '✅ Set' : '❌ Not set'}`);
-});
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Webhook receiver listening on port ${PORT}`);
+    console.log(`📱 Telegram Bot Token: ${TELEGRAM_BOT_TOKEN ? '✅ Set' : '❌ Not set'}`);
+    console.log(`💬 Telegram Chat ID: ${TELEGRAM_CHAT_ID ? '✅ Set' : '❌ Not set'}`);
+    console.log(`🔴 Redis URL: ${process.env.KV_REST_API_URL ? '✅ Set' : '❌ Not set'}`);
+  });
+}
+
+// Export for Vercel serverless
+export default app;
