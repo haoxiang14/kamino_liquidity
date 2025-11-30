@@ -13,12 +13,25 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const KNOWN_TOKENS = {
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
   '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo': 'PYUSD',
-  '38wQFRuj6FezzGYegzHdqrRK7hkEkBx7wSqxDBYXpKpy':'kPUSD-USDC'
+  '38wQFRuj6FezzGYegzHdqrRK7hkEkBx7wSqxDBYXpKpy': 'kPUSD-USDC'
 };
 
-// Parse JSON bodies (no raw buffer capture, no signature verification)
+// Parse JSON bodies
 app.use(express.json());
 
+// Store processed transaction signatures to prevent duplicates
+const processedTransactions = new Set();
+const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent memory issues
+
+// Clean up old transactions periodically (every hour)
+setInterval(() => {
+  if (processedTransactions.size > MAX_CACHE_SIZE) {
+    const toKeep = Array.from(processedTransactions).slice(-MAX_CACHE_SIZE);
+    processedTransactions.clear();
+    toKeep.forEach(sig => processedTransactions.add(sig));
+    console.log(`🧹 Cleaned transaction cache, kept ${toKeep.length} recent transactions`);
+  }
+}, 300000);
 
 // Decode and format the webhook event
 function decodeWebhookEvent(event) {
@@ -87,7 +100,7 @@ async function sendTelegramMessage(message) {
       body: JSON.stringify({
         chat_id: TELEGRAM_CHAT_ID,
         text: message,
-        parse_mode: 'HTML', // Allows HTML formatting
+        parse_mode: 'HTML',
         disable_web_page_preview: false
       })
     });
@@ -107,23 +120,36 @@ async function sendTelegramMessage(message) {
   }
 }
 
-
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.post('/webhook', async (req, res) => {
-  console.log('Webhook received from Helius');
+  console.log('📨 Webhook received from Helius');
   const payload = req.body;
-  console.log(JSON.stringify(payload, null, 2));
+  
+  // Respond immediately to prevent retries
+  res.status(200).json({ received: true });
+  
   // Handle array of events
   const events = Array.isArray(payload) ? payload : [payload];
   
   for (const event of events) {
+    const signature = event.signature;
+    
+    // Check if we've already processed this transaction
+    if (processedTransactions.has(signature)) {
+      console.log(`⏭️ Duplicate transaction detected, skipping: ${signature.slice(0, 16)}...`);
+      continue;
+    }
+    
     // Filter for transactions containing "withdraw" in the type or description
     const type = (event.type || '').toLowerCase();
     const description = (event.description || '').toLowerCase();
     
     if (type.includes('withdraw') || description.includes('withdraw')) {
-      console.log('Withdrawal detected!');
+      console.log('💸 Withdrawal detected!');
+      
+      // Mark this transaction as processed BEFORE sending to Telegram
+      processedTransactions.add(signature);
       
       // Decode the event
       const decoded = decodeWebhookEvent(event);
@@ -136,11 +162,11 @@ app.post('/webhook', async (req, res) => {
     } else {
       console.log(new Date().toISOString());
       console.log(`⏭️ Skipping event type: ${type}`);
+      
+      // Still mark as processed to avoid future duplicate checks
+      processedTransactions.add(signature);
     }
   }
-  
-  // Always respond with 200 OK to acknowledge receipt
-  res.status(200).json({ received: true });
 });
 
 const PORT = process.env.PORT || 3000;
