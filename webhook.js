@@ -116,9 +116,6 @@ app.post('/webhook', async (req, res) => {
   console.log('📨 Webhook received from Helius');
   const payload = req.body;
   
-  // Respond immediately to prevent retries
-  res.status(200).json({ received: true });
-  
   // Handle array of events
   const events = Array.isArray(payload) ? payload : [payload];
   
@@ -164,6 +161,9 @@ app.post('/webhook', async (req, res) => {
       console.error('❌ Error processing transaction:', error);
     }
   }
+  
+  // Respond AFTER all processing is complete (critical for Vercel)
+  res.status(200).json({ received: true });
 });
 
 // For local development
